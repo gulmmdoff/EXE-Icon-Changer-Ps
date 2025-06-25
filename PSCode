@@ -1,0 +1,99 @@
+Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+
+public class IconReplacer
+{
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern IntPtr BeginUpdateResource(string pFileName, [MarshalAs(UnmanagedType.Bool)] bool bDeleteExistingResources);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool UpdateResource(IntPtr hUpdate, IntPtr lpType, IntPtr lpName, ushort wLanguage,
+        byte[] lpData, uint cbData);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool EndUpdateResource(IntPtr hUpdate, bool fDiscard);
+
+    static IntPtr MAKEINTRESOURCE(ushort id)
+    {
+        return (IntPtr)id;
+    }
+
+    public static bool ReplaceIcon(string exePath, string iconPath, string outputPath)
+    {
+        File.Copy(exePath, outputPath, true);
+
+        byte[] iconBytes = File.ReadAllBytes(iconPath);
+
+        IntPtr hUpdate = BeginUpdateResource(outputPath, false);
+        if (hUpdate == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        ushort langId = 0x0409; // English (United States)
+
+        // ICONDIR (icon file header) is 6 bytes, each ICONDIRENTRY is 16 bytes
+        int count = BitConverter.ToUInt16(iconBytes, 4); // number of images
+        int iconGroupSize = 6 + (count * 14);
+        byte[] iconGroupData = new byte[iconGroupSize];
+
+        Array.Copy(iconBytes, 0, iconGroupData, 0, 6); // ICONDIR header
+
+        for (int i = 0; i < count; i++)
+        {
+            int offset = 6 + i * 14;
+            int icoEntryOffset = 6 + i * 16;
+
+            // width, height, color count, reserved
+            Array.Copy(iconBytes, icoEntryOffset, iconGroupData, offset, 4);
+            // planes, bit count
+            Array.Copy(iconBytes, icoEntryOffset + 6, iconGroupData, offset + 4, 4);
+            // size
+            Array.Copy(iconBytes, icoEntryOffset + 8, iconGroupData, offset + 8, 4);
+            // resource ID (i + 1)
+            iconGroupData[offset + 12] = (byte)(i + 1);
+            iconGroupData[offset + 13] = 0;
+        }
+
+        for (int i = 0; i < count; i++)
+        {
+            int icoEntryOffset = 6 + i * 16;
+            int imgSize = BitConverter.ToInt32(iconBytes, icoEntryOffset + 8);
+            int imgOffset = BitConverter.ToInt32(iconBytes, icoEntryOffset + 12);
+            byte[] imgData = new byte[imgSize];
+            Array.Copy(iconBytes, imgOffset, imgData, 0, imgSize);
+
+            if (!UpdateResource(hUpdate, MAKEINTRESOURCE(3), MAKEINTRESOURCE((ushort)(i + 1)), langId, imgData, (uint)imgSize))
+            {
+                EndUpdateResource(hUpdate, true);
+                return false;
+            }
+        }
+
+        // RT_GROUP_ICON = 14
+        if (!UpdateResource(hUpdate, MAKEINTRESOURCE(14), MAKEINTRESOURCE(1), langId, iconGroupData, (uint)iconGroupData.Length))
+        {
+            EndUpdateResource(hUpdate, true);
+            return false;
+        }
+
+        return EndUpdateResource(hUpdate, false);
+    }
+}
+"@
+
+# Path ayarları
+$exeInput = "C:\Input\program.exe"
+$iconInput = "C:\Icons\my_icon.ico"
+$exeOutput = "C:\Output\program_with_icon.exe"
+
+# Funksiyanı çağır
+$result = [IconReplacer]::ReplaceIcon($exeInput, $iconInput, $exeOutput)
+
+if ($result) {
+    Write-Host "[+] Yeni EXE: $exeOutput"
+} else {
+    Write-Host "[-] İkon dəyişdirilə bilmədi."
+}
